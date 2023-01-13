@@ -85,7 +85,7 @@ class Transformer(nn.Module):
             forward_expansion_dim=forward_expansion_dim,
             dropout=dropout, eps=eps)
 
-    def forward(self, X_seq, X_mask, Y_seq, Y_mask):
+    def forward(self, X_seq, X_mask, Y_seq, Y_mask, device='cpu'):
         """
         Arguments:
             X_seq (Long tensor(m, Tx)         : Source sequence, categorical Long
@@ -96,8 +96,10 @@ class Transformer(nn.Module):
             out (tensor(m, Ty, emb_dim))      : log softmax probability predict category in Y_lexicon
         """
         X_enc = self.encoder(
-            X_seq=X_seq, X_mask=X_mask)
-        out = self.decoder(
+            X_seq=X_seq, X_mask=X_mask,
+            device=device)
+        out, attention = self.decoder(
             Y_seq=Y_seq, Y_mask=Y_mask,
-            X_enc=X_enc, X_mask=X_mask)
-        return out
+            X_enc=X_enc, X_mask=X_mask,
+            device=device)
+        return out, attention

@@ -41,8 +41,9 @@ def setup_logger(name):
 class Seq2SeqDataset(Dataset):
     def __init__(self,
             en_tokenizer, vi_tokenizer,
-            en_sentences="datasets/train/en_175000",
-            vi_sentences="datasets/train/vi_175000",
+            Tx, Ty,
+            en_sentences="../datasets/train/en_175000",
+            vi_sentences="../datasets/train/vi_175000",
             mode="train", device='cpu'):
         super(Seq2SeqDataset, self).__init__()
         # Mode
@@ -68,6 +69,10 @@ class Seq2SeqDataset(Dataset):
         self.en_tokenizer = en_tokenizer
         self.vi_tokenizer = vi_tokenizer
 
+        # Params
+        self.Tx = Tx 
+        self.Ty = Ty 
+
     def __len__(self):
         return self.length
 
@@ -79,7 +84,7 @@ class Seq2SeqDataset(Dataset):
             padding='max_length',              # Add [PAD]s
             return_attention_mask=True,     # Generate the attention mask
             return_tensors='pt',            # ask the function to return PyTorch tensors
-            max_length=60,                 # maximum length of a sentence
+            max_length=self.Tx,                 # maximum length of a sentence
             truncation=True
         )
         ## (Tx)
@@ -92,11 +97,16 @@ class Seq2SeqDataset(Dataset):
             padding='max_length',           # Add [PAD]s
             return_attention_mask=True,     # Generate the attention mask
             return_tensors='pt',            # ask the function to return PyTorch tensors
-            max_length=60,                  # maximum length of a sentence
+            max_length=self.Ty,                  # maximum length of a sentence
             truncation=True
         )
         ## (Ty)
         Y_seq = Y_encoded['input_ids'].squeeze(dim=0)
+        ## Replace </s> with <pad>
+        # vi_pad_token = vi_tokenizer.convert_tokens_to_ids('<pad>')
+        # vi_eos_token = vi_tokenizer.convert_tokens_to_ids('</s>')
+        # Y_seq = torch.masked_fill(Y_seq,
+        #     mask=(Y_seq==vi_eos_token), value=vi_pad_token)
 
         return {
             'X_sentence': self.data_en[idx],
@@ -123,20 +133,26 @@ def fit(
 
     # Lexicon config
     en_pad_token = en_tokenizer.convert_tokens_to_ids('[PAD]')
-    en_pad_token = en_tkids_2_lexicon[en_pad_token]
+
+    # dataloader
+    train_loader = DataLoader(
+        dataset=train_dset,
+        batch_size=batch_size,
+        shuffle=True, num_workers=128, pin_memory=True)
 
     # Model
     transformer = Transformer(
         Tx=Tx, X_lexicon_size=X_lexicon_size,
         Ty=Ty, Y_lexicon_size=Y_lexicon_size,
-        embed_dim=1200,
-        num_layers=40, num_heads=60,
-        forward_expansion_dim=4800,
+        embed_dim=512,
+        num_layers=16, num_heads=32,
+        forward_expansion_dim=2048,
         dropout=0.1, eps=1e-5)
     transformer = transformer.to(device)
 
-    num_params = len(list(transformer.parameters()))
-    logger.info(f'Number of parameters: {num_params}')
+    def count_parameters(model):
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f'Number of parameters: {count_parameters(transformer)}')
 
     # Criterions
     #    - Exclude padding token when compte loss
@@ -147,9 +163,9 @@ def fit(
         reduction='mean',
         ignore_index=vi_pad_token)
     def custom_lossfn(Y_hat, Y, loss_fn):
-        '''Only allow 1 EOS token'''
+        '''Penalize > 1 EOS token'''
         # Cross Entropy cost
-        Y_hat_reshaped = Y_hat.view(-1, Y_lexicon_size)
+        Y_hat_reshaped = Y_hat.contiguous().view(-1, Y_lexicon_size)
         Y_target_reshaped = Y.contiguous().view(-1)
         cost = loss_fn(Y_hat_reshaped, Y_target_reshaped)
 
@@ -158,18 +174,20 @@ def fit(
         m, _ = Y_pred.size()
         num_eos_tokens = (Y_pred == vi_eos_token).sum().item()
 
-        # Punishment
-        cost += 1./m*torch.tensor(np.abs(num_eos_tokens-m) * float('1e3')) 
+        # Penalize more than 1 eos
+        # cost += torch.tensor(np.abs(num_eos_tokens-m) * float('1e3'),
+        #     requires_grad=True)
         return cost
 
     # Optimizer
     optimizer = torch.optim.Adam(transformer.parameters(),
-        lr=alpha, betas=(0.9, 0.98), eps=1e-9)
+        lr=alpha, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, factor=0.1, patience=10, verbose=True)
 
-    # Load checkpoints
+    # Pretrain or train from scratch
     if os.path.exists(ckpts_f_path):
+        # Load checkpoints
         checkpoint = torch.load(ckpts_f_path)
 
         start_epoch = int(checkpoint['epoch']) + 1
@@ -184,13 +202,16 @@ def fit(
         best_cost = float('inf')
         start_epoch = 0
 
+        # Xavier Weights Init
+        def initialize_weights(m):
+            if hasattr(m, 'weight') and m.weight.dim() > 1:
+                nn.init.xavier_uniform_(m.weight.data)
+        transformer.apply(initialize_weights)
+
+
     # Train Iters
     def train_iter():
         iter_costs = []
-        train_loader = DataLoader(
-            dataset=train_dset,
-            batch_size=batch_size,
-            shuffle=True, num_workers=128, pin_memory=True)
         transformer.train()
         for b, batch in enumerate(tqdm(train_loader, desc=f'Iteration {i}')):
             # Batch:
@@ -198,6 +219,7 @@ def fit(
             #    Y_b = (batch_size, Ty)
             Xb = batch['X_seq'].to(device)
             Yb = batch['Y_seq'].to(device)
+            batch_size = Xb.size(0)
 
             # t-1 preidct t
             Yb_in = Yb[:, :-1]
@@ -216,9 +238,10 @@ def fit(
             # Forward
             #    Yb_hat = (batch_size, Ty, Y_lexicon_size)
             optimizer.zero_grad()
-            Yb_hat = transformer(
+            Yb_hat, _ = transformer(
                 X_seq=Xb, X_mask=X_mask,
-                Y_seq=Yb_in, Y_mask=Y_mask)
+                Y_seq=Yb_in, Y_mask=Y_mask,
+                device=device)
 
             # Batch Cost compute
             cost_b = custom_lossfn(Yb_hat, Yb_target, criterion)
@@ -235,8 +258,7 @@ def fit(
             # Sample Trainset
             if SAMPLING is True and b%20==0:
                 print('\n======= SAMPLING =========')
-                m = Xb.size(0)
-                sample_idx = np.random.randint(0,m)
+                sample_idx = np.random.randint(0, batch_size)
 
                 x_utt = batch['X_sentence'][sample_idx]
 
@@ -262,11 +284,12 @@ def fit(
         cost = sum(iter_costs) / len(iter_costs)
         scheduler.step(cost)
         if i % 1 == 0 or i == num_iters-1:
-            logger.info(f"Cost after iteration {i:4}: {cost:.4f}")
+            logger.info(f"Cost after iteration {i:4}: {cost:.3f}")
 
         # Save model + checkpoints
         if cost < best_cost:
             best_cost = cost
+            logger.info(f'[SAVING CKPT] Best cost update {best_cost:.3f}')
 
             if not os.path.exists('ckpts/'): os.makedirs('ckpts/')
             # Model
@@ -298,9 +321,14 @@ if __name__ == "__main__":
     # with open('lexicons/vi_lexicon.pkl', 'rb') as file_obj:
     #     vi_tkids_2_lexicon, vi_lexicon_2_tkids = pickle.load(file_obj)
 
+    # Params
+    Tx = 55
+    Ty = 60
+
     # Init dset
     train_dset = Seq2SeqDataset(
         en_tokenizer=en_tokenizer, vi_tokenizer=vi_tokenizer,
+        Tx=Tx, Ty=Ty,
         en_sentences="../datasets/train/en_150000",
         vi_sentences="../datasets/train/vi_150000",
         mode="train", device=device)
@@ -309,8 +337,8 @@ if __name__ == "__main__":
     fit(
         train_dset,
         en_tokenizer=en_tokenizer, vi_tokenizer=vi_tokenizer,
-        Tx=60, X_lexicon_size=30522,
-        Ty=59, Y_lexicon_size=64000,
-        alpha=5e-1, num_iters=200, batch_size=16,
+        Tx=Tx, X_lexicon_size=30522,
+        Ty=Ty-1, Y_lexicon_size=64000,
+        alpha=0.2, num_iters=1000, batch_size=128,
         device=device,
         checkpoint_name='8B_Transformer_en2vi', SAMPLING=True)

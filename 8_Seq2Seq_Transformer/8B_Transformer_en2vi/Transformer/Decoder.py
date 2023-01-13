@@ -1,5 +1,7 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 from Transformer.Components import \
     Embbeding, PositionalEncoder, MultiHeadAttention, FeedForward, LayerNorm
@@ -50,25 +52,25 @@ class DecoderBlock(nn.Module):
             Y_dec (tensor(m, Ty, emb_dim))     : deccoder output
         """
         # Layer 1
-        masked_att = self.masked_multihead_attention(
+        Y_masked_att, _ = self.masked_multihead_attention(
             Q=Y_emb_pos, K=Y_emb_pos, V=Y_emb_pos,
             mask=Y_mask)
         Y_norm_1 = self.dropout_1(
-            self.norm_1(Y_emb_pos + masked_att))
+            self.norm_1(Y_emb_pos + Y_masked_att))
 
         # Layer 2
-        att = self.multihead_attention(
+        Y_att, attention = self.multihead_attention(
             Q=Y_norm_1, K=X_enc, V=X_enc,
             mask=X_mask)
         Y_norm_2 = self.dropout_2(
-            self.norm_2(Y_norm_1 + att))
+            self.norm_2(Y_norm_1 + Y_att))
 
         # Layer 3
         ff = self.feed_forward(Y_norm_2)
         Y_dec = self.dropout_3(
             self.norm_3(Y_norm_2 + ff))
 
-        return Y_dec
+        return Y_dec, attention
 
 
 class Decoder(nn.Module):
@@ -85,7 +87,9 @@ class Decoder(nn.Module):
         self.input_embedding = Embbeding(
             lexicon_size=Y_lexicon_size, embed_dim=embed_dim)
         self.pos_encoding = PositionalEncoder(
-            T=Ty, embed_dim=embed_dim)
+            max_length=100,
+            embed_dim=embed_dim)
+
         self.dropout = nn.Dropout(dropout)
 
         # Dec blocks
@@ -103,7 +107,7 @@ class Decoder(nn.Module):
 
     def forward(self,
             Y_seq, Y_mask,
-            X_enc, X_mask):
+            X_enc, X_mask, device='cpu'):
         """
         Arguments:
             Y_seq (Long tensor(m, Ty)         : Target sequence, categorical Long
@@ -113,14 +117,17 @@ class Decoder(nn.Module):
         Returns:
             out (tensor(m, Ty, emb_dim))      : log softmax probability predict category in Y_lexicon
         """
-        # Y = emb + pe
+        # Input emb, pos encoding
+        m, Ty = Y_seq.size()
         Y_emb = self.input_embedding(Y_seq)
-        Y_emb_pos = self.pos_encoding(Y_emb)
-        Y_dec = self.dropout(Y_emb_pos)
+        Y_pos = self.pos_encoding(m=m, T=Ty, device=device)
+
+        # Y_emb_pos = rescaled*emb + position encoded
+        Y_dec = self.dropout(np.sqrt(self.embed_dim)*Y_emb + Y_pos)
 
         # Dec blocks
         for dec_blk in self.dec_blocks:
-            Y_dec = dec_blk(
+            Y_dec, attention = dec_blk(
                 Y_emb_pos=Y_dec, Y_mask=Y_mask,
                 X_enc=X_enc, X_mask=X_mask)
 
@@ -128,4 +135,4 @@ class Decoder(nn.Module):
         out = self.fc_out(Y_dec)
         out = F.log_softmax(out, dim=-1)
 
-        return out
+        return out, attention

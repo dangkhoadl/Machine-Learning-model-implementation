@@ -1,4 +1,6 @@
+import torch
 import torch.nn as nn
+import numpy as np
 
 from Transformer.Components import \
     Embbeding, PositionalEncoder, MultiHeadAttention, FeedForward, LayerNorm
@@ -36,11 +38,11 @@ class EncoderBlock(nn.Module):
             X_enc (tensor(m, Tx, emb_dim))    : encoder output from source seq
         """
         # Layer 1
-        att = self.multihead_attention(
+        X_att, _ = self.multihead_attention(
             Q=X_emb_pos, K=X_emb_pos, V=X_emb_pos,
             mask=X_mask)
         X_norm_1 = self.dropout_1(
-            self.norm_1(X_emb_pos + att))
+            self.norm_1(X_emb_pos + X_att))
 
         # Layer 2
         ff = self.feed_forward(X_norm_1)
@@ -64,7 +66,8 @@ class Encoder(nn.Module):
         self.input_embedding = Embbeding(
             lexicon_size=X_lexicon_size, embed_dim=embed_dim)
         self.pos_encoding = PositionalEncoder(
-            T=Tx, embed_dim=embed_dim)
+            max_length=100,
+            embed_dim=embed_dim)
         self.dropout = nn.Dropout(dropout)
 
         # Enc blocks
@@ -75,7 +78,7 @@ class Encoder(nn.Module):
             ) for _ in range(num_layers)
         ])
 
-    def forward(self, X_seq, X_mask):
+    def forward(self, X_seq, X_mask, device='cpu'):
         """
         Arguments:
             X_seq (Long tensor(m, Tx)         : Source sequence, categorical Long
@@ -83,10 +86,13 @@ class Encoder(nn.Module):
         Returns:
             X_enc (tensor(m, Tx, emb_dim))    : encoder output from source seq
         """
-        # X = emb + pe
+        # Input emb, pos encoding
+        m, Tx = X_seq.size()
         X_emb = self.input_embedding(X_seq)
-        X_emb_pos = self.pos_encoding(X_emb)
-        X_enc = self.dropout(X_emb_pos)
+        X_pos = self.pos_encoding(m=m, T=Tx, device=device)
+
+        # X_emb_pos = rescaled*emb + position encoded
+        X_enc = self.dropout(np.sqrt(self.embed_dim)*X_emb + X_pos)
 
         # Enc blocks
         for enc_blk in self.enc_blocks:
