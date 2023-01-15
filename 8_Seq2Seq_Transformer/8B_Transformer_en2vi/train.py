@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 import sys, os
 import logging
-import pickle
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoTokenizer
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 import numpy as np
 from tqdm import tqdm
 
+from utils import Seq2SeqDataset, translate
 from Transformer.Transformer import \
     Transformer, create_mask_source, create_mask_target
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def setup_logger(name):
     # Setup display to terminal stderr
@@ -37,83 +39,6 @@ def setup_logger(name):
     logger.addHandler(console)
     return logger
 
-
-class Seq2SeqDataset(Dataset):
-    def __init__(self,
-            en_tokenizer, vi_tokenizer,
-            Tx, Ty,
-            en_sentences="../datasets/train/en_175000",
-            vi_sentences="../datasets/train/vi_175000",
-            mode="train", device='cpu'):
-        super(Seq2SeqDataset, self).__init__()
-        # Mode
-        assert mode in ["train", "validation", "test"]
-        self.mode = mode
-        self.device = device
-
-        # Read data
-        ## Read SRC
-        with open(en_sentences, 'r+', encoding='utf-8') as file_obj:
-            data_en = file_obj.readlines()
-        self.data_en = [ line.strip().lower() for line in data_en ]
-
-        ## Read TAR
-        with open(vi_sentences, 'r+', encoding='utf-8') as file_obj:
-            data_vi = file_obj.readlines()
-        self.data_vi = [ line.strip().lower() for line in data_vi ]
-
-        # Get length
-        self.length = len(self.data_en)
-        
-        # Init tokenizers
-        self.en_tokenizer = en_tokenizer
-        self.vi_tokenizer = vi_tokenizer
-
-        # Params
-        self.Tx = Tx 
-        self.Ty = Ty 
-
-    def __len__(self):
-        return self.length
-
-    def __getitem__(self, idx):
-        # X
-        X_encoded = self.en_tokenizer(
-            text=self.data_en[idx],         # the batch sentences to be encoded
-            add_special_tokens=True,        # Add [CLS] and [SEP]
-            padding='max_length',              # Add [PAD]s
-            return_attention_mask=True,     # Generate the attention mask
-            return_tensors='pt',            # ask the function to return PyTorch tensors
-            max_length=self.Tx,                 # maximum length of a sentence
-            truncation=True
-        )
-        ## (Tx)
-        X_seq = X_encoded['input_ids'].squeeze(dim=0)
-
-        # Y
-        Y_encoded = self.vi_tokenizer(
-            text=self.data_vi[idx],         # the batch sentences to be encoded
-            add_special_tokens=True,        # Add [CLS] and [SEP]
-            padding='max_length',           # Add [PAD]s
-            return_attention_mask=True,     # Generate the attention mask
-            return_tensors='pt',            # ask the function to return PyTorch tensors
-            max_length=self.Ty,                  # maximum length of a sentence
-            truncation=True
-        )
-        ## (Ty)
-        Y_seq = Y_encoded['input_ids'].squeeze(dim=0)
-        ## Replace </s> with <pad>
-        # vi_pad_token = vi_tokenizer.convert_tokens_to_ids('<pad>')
-        # vi_eos_token = vi_tokenizer.convert_tokens_to_ids('</s>')
-        # Y_seq = torch.masked_fill(Y_seq,
-        #     mask=(Y_seq==vi_eos_token), value=vi_pad_token)
-
-        return {
-            'X_sentence': self.data_en[idx],
-            'X_seq': torch.LongTensor(X_seq),
-            'Y_sentence': self.data_vi[idx],
-            'Y_seq': torch.LongTensor(Y_seq),
-        }
 
 def fit(
         train_dset,
@@ -145,7 +70,7 @@ def fit(
         Tx=Tx, X_lexicon_size=X_lexicon_size,
         Ty=Ty, Y_lexicon_size=Y_lexicon_size,
         embed_dim=512,
-        num_layers=16, num_heads=32,
+        num_layers=12, num_heads=32,
         forward_expansion_dim=2048,
         dropout=0.1, eps=1e-5)
     transformer = transformer.to(device)
@@ -175,7 +100,7 @@ def fit(
         num_eos_tokens = (Y_pred == vi_eos_token).sum().item()
 
         # Penalize more than 1 eos
-        # cost += torch.tensor(np.abs(num_eos_tokens-m) * float('1e3'),
+        # cost += torch.tensor(np.abs(num_eos_tokens-m) * float('1'),
         #     requires_grad=True)
         return cost
 
@@ -237,6 +162,7 @@ def fit(
                 device=device)
             # Forward
             #    Yb_hat = (batch_size, Ty, Y_lexicon_size)
+            transformer.train()
             optimizer.zero_grad()
             Yb_hat, _ = transformer(
                 X_seq=Xb, X_mask=X_mask,
@@ -256,20 +182,26 @@ def fit(
             optimizer.step()
 
             # Sample Trainset
-            if SAMPLING is True and b%20==0:
+            if SAMPLING is True and b%100==0:
+                transformer.eval()
                 print('\n======= SAMPLING =========')
                 sample_idx = np.random.randint(0, batch_size)
 
                 x_utt = batch['X_sentence'][sample_idx]
-
                 y_utt = batch['Y_sentence'][sample_idx]
 
                 y_hat = Yb_hat.argmax(dim=-1)[sample_idx]
                 y_hat_pred = vi_tokenizer.decode(y_hat)
+                y_hat_decodes = translate(x_utt,
+                    model=transformer,
+                    en_tokenizer=en_tokenizer, vi_tokenizer=vi_tokenizer,
+                    Tx=Tx, Ty=Ty, beam_width=5, device=device)
 
                 print(f'{x_utt = }')
                 print(f'{y_utt = }')
                 print(f'{y_hat_pred = }')
+                for x, (decode, att) in enumerate(y_hat_decodes):
+                    print(f'y_hat_decode[{x}] = {decode}')
                 print(f'Batch cost: {cost_b.item():.3f}')
                 print('==========================')
 
@@ -315,12 +247,6 @@ if __name__ == "__main__":
     vi_tokenizer = AutoTokenizer.from_pretrained(
         'vinai/phobert-base')
 
-    # # Load Lexicon
-    # with open('lexicons/en_lexicon.pkl', 'rb') as file_obj:
-    #     en_tkids_2_lexicon, en_lexicon_2_tkids = pickle.load(file_obj)
-    # with open('lexicons/vi_lexicon.pkl', 'rb') as file_obj:
-    #     vi_tkids_2_lexicon, vi_lexicon_2_tkids = pickle.load(file_obj)
-
     # Params
     Tx = 55
     Ty = 60
@@ -339,6 +265,6 @@ if __name__ == "__main__":
         en_tokenizer=en_tokenizer, vi_tokenizer=vi_tokenizer,
         Tx=Tx, X_lexicon_size=30522,
         Ty=Ty-1, Y_lexicon_size=64000,
-        alpha=0.2, num_iters=1000, batch_size=128,
+        alpha=1e-4, num_iters=1000, batch_size=128,
         device=device,
         checkpoint_name='8B_Transformer_en2vi', SAMPLING=True)
