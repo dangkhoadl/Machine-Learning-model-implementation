@@ -41,7 +41,7 @@ def setup_logger(name):
 
 
 def fit(
-        train_dset,
+        train_dset, eval_dset,
         en_tokenizer, vi_tokenizer,
         Tx, X_lexicon_size,
         Ty, Y_lexicon_size,
@@ -63,7 +63,7 @@ def fit(
     train_loader = DataLoader(
         dataset=train_dset,
         batch_size=batch_size,
-        shuffle=True, num_workers=128, pin_memory=True)
+        shuffle=True, num_workers=64, pin_memory=True)
 
     # Model
     transformer = Transformer(
@@ -137,7 +137,6 @@ def fit(
     # Train Iters
     def train_iter():
         iter_costs = []
-        transformer.train()
         for b, batch in enumerate(tqdm(train_loader, desc=f'Iteration {i}')):
             # Batch:
             #    X_b = (batch_size, Tx)
@@ -184,7 +183,7 @@ def fit(
             # Sample Trainset
             if SAMPLING is True and b%100==0:
                 transformer.eval()
-                print('\n======= SAMPLING =========')
+                print('\n======= SAMPLING TRAIN =========')
                 sample_idx = np.random.randint(0, batch_size)
 
                 x_utt = batch['X_sentence'][sample_idx]
@@ -203,8 +202,24 @@ def fit(
                 for x, (decode, att) in enumerate(y_hat_decodes):
                     print(f'y_hat_decode[{x}] = {decode}')
                 print(f'Batch cost: {cost_b.item():.3f}')
-                print('==========================')
+            # Sample Evalset
+            if SAMPLING is True and b%100==0:
+                transformer.eval()
+                print('\n======= SAMPLING EVAL =========')
+                eval_size = len(eval_dset)
+                sample_idx = np.random.randint(0, eval_size)
 
+                x_utt = eval_dset[sample_idx]['X_sentence']
+                y_utt = eval_dset[sample_idx]['Y_sentence']
+                y_decodes = translate(x_utt,
+                    model=transformer,
+                    en_tokenizer=en_tokenizer, vi_tokenizer=vi_tokenizer,
+                    Tx=Tx, Ty=Ty, beam_width=10, device=device)
+
+                print(f'{x_utt = }')
+                print(f'{y_utt = }')
+                for x, (decode, att) in enumerate(y_decodes):
+                    print(f'y_decodes[{x}] = {decode}')
         return iter_costs
 
     # Train - Epoch
@@ -255,16 +270,22 @@ if __name__ == "__main__":
     train_dset = Seq2SeqDataset(
         en_tokenizer=en_tokenizer, vi_tokenizer=vi_tokenizer,
         Tx=Tx, Ty=Ty,
-        en_sentences="../datasets/train/en_150000",
-        vi_sentences="../datasets/train/vi_150000",
+        en_sentences="../datasets/train/en_1355603",
+        vi_sentences="../datasets/train/vi_1355603",
         mode="train", device=device)
+    eval_dset = Seq2SeqDataset(
+        en_tokenizer=en_tokenizer, vi_tokenizer=vi_tokenizer,
+        Tx=Tx, Ty=Ty,
+        en_sentences="../datasets/eval/en",
+        vi_sentences="../datasets/eval/vi",
+        mode="validation", device=device)
 
     # Train
     fit(
-        train_dset,
+        train_dset, eval_dset,
         en_tokenizer=en_tokenizer, vi_tokenizer=vi_tokenizer,
         Tx=Tx, X_lexicon_size=30522,
         Ty=Ty-1, Y_lexicon_size=64000,
-        alpha=1e-4, num_iters=1000, batch_size=128,
+        alpha=1e-5, num_iters=2000, batch_size=64,
         device=device,
         checkpoint_name='8B_Transformer_en2vi', SAMPLING=True)

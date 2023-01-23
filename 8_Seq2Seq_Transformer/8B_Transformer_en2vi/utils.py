@@ -147,12 +147,12 @@ def translate(input_sentence,
                 Y_seq_b[:, t] = ids
                 if ids == vi_eos_id or t == Ty-1:
                     final_results.append((
-                        log_prob + log_prob_b,
+                        1/t*(log_prob*(t-1) + log_prob_b),
                         Y_seq_b,
                         attention))
                 else:
                     new_beams.append((
-                        log_prob + log_prob_b,
+                        1/t*(log_prob*(t-1) + log_prob_b),
                         Y_seq_b))
         # Relax beams
         beams = sorted(new_beams, key=lambda x: x[0], reverse=True)[:beam_width]
