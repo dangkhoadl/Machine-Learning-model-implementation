@@ -84,8 +84,10 @@ class Seq2SeqDataset(Dataset):
 
 def translate(input_sentence,
         model, en_tokenizer, vi_tokenizer,
-        Tx=32, Ty=12, beam_width=5, device='cpu'):
+        Tx=32, Ty=12, beam_width=5, n_best=3, device='cpu'):
     """
+    Beam search Algorithm
+
     Arguments:
         model (torch model)                 : trained transformer model
         input_sentence (str)                : Input human readable format
@@ -99,7 +101,7 @@ def translate(input_sentence,
     
     # str -> [37,2,1,56,38] -> tensor(1, Tx)
     X_seq = en_tokenizer(
-        text=[input_sentence],                      # the batch sentences to be encoded
+        text=[input_sentence],          # the batch sentences to be encoded
         add_special_tokens=True,        # Add [CLS] and [SEP]
         padding='max_length',           # Add [PAD]s
         return_attention_mask=True,     # Generate the attention mask
@@ -111,20 +113,18 @@ def translate(input_sentence,
         pad_token=en_pad_id,
         device=device)
 
-    # Init beams: log_prob, Y_seq
+    # Init beams: (mean_log_prob, Y_seq)
     Y_seq = torch.full((1, Ty),
         fill_value=vi_pad_id, dtype=torch.int64).to(device)
     Y_seq[:, 0] = vi_sos_id
     beams = [(0, Y_seq)]
 
-
-    # Beam Search
+    # Beam Search. loop through t and b
     final_results = []
     for t in range(1, Ty):
         new_beams = []
         for log_prob, Y_seq in beams:
-
-            # Infer
+            # Infer token[t]
             Y_in = Y_seq[:,:t]
             Y_mask = create_mask_target(
                 Y_seq=Y_in,
@@ -137,7 +137,7 @@ def translate(input_sentence,
                     Y_seq=Y_in, Y_mask=Y_mask,
                     device=device)
 
-            # Update beams
+            # Update beams[b]
             top_log_probs, top_indices = Y_hat[0,t-1,:].topk(beam_width)
             for b in range(beam_width):
                 ids = top_indices[b].item()
@@ -145,22 +145,25 @@ def translate(input_sentence,
                 
                 Y_seq_b = deepcopy(Y_seq)
                 Y_seq_b[:, t] = ids
+
+                # Check if eos or max length -> end
                 if ids == vi_eos_id or t == Ty-1:
+                    # Update ids[t,b] and sequence mean_log_prob
                     final_results.append((
                         1/t*(log_prob*(t-1) + log_prob_b),
                         Y_seq_b,
                         attention))
                 else:
+                    # Update ids[t,b] and sequence mean_log_prob
                     new_beams.append((
                         1/t*(log_prob*(t-1) + log_prob_b),
                         Y_seq_b))
         # Relax beams
         beams = sorted(new_beams, key=lambda x: x[0], reverse=True)[:beam_width]
 
-    # Retrieve best guess Y_seq
+    # Retrieve best guess Y_seq (maximum mean_log_prob)
     outputs = []
     sent_set = set()
-    
     if len(final_results) > 0:
         final_results = sorted(final_results, key=lambda x: x[0], reverse=True)
         for res in final_results[:2*beam_width]:
@@ -172,4 +175,5 @@ def translate(input_sentence,
                 outputs.append( (sent, res[2]) )
                 sent_set.add(sent)
 
-    return list(outputs)[:beam_width]
+    # Return n_best seqs
+    return list(outputs)[:n_best]
