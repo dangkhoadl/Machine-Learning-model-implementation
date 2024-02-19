@@ -1,0 +1,25 @@
+# Env config
+seed: 258
+
+# Out
+exp_name: !!str SupCon
+
+# Training Arguments
+num_workers: 64
+batch_size: 512
+
+# Pretrain
+pretrain_resume: False
+pretrain_epochs: 5
+pretrain_eval_every_epochs: 1
+pretrain_lr: !!float 0.5 # default 0.2
+pretrain_criterion: !new:src.losses.SupConLoss
+    temperature: 0.5
+    base_temperature: 0.07
+    contrast_mode: all
+
+# Downstream
+downstream_resume: False
+downstream_epochs : 150
+downstream_eval_every_epochs: 5
+downstream_lr: !!float 5e-2 # default 1e-2

@@ -1,0 +1,4 @@
+Test accuracy: 0.8010
+Test precision: 0.8004
+Test recall: 0.8010
+Test f1-score: 0.7993

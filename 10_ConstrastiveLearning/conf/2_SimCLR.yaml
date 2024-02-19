@@ -1,0 +1,24 @@
+# Env config
+seed: 258
+
+# Out
+exp_name: !!str SimCLR
+
+# Training Arguments
+num_workers: 64
+batch_size: 512
+
+# Pretrain
+pretrain_resume: False
+pretrain_epochs: 200
+pretrain_eval_every_epochs: 20
+pretrain_lr: !!float 0.2 # default 0.2
+pretrain_criterion: !new:src.losses.SimCLR_Loss
+    batch_size: !ref <batch_size>
+    temperature: 0.5 # default 0.5
+
+# Downstream
+downstream_resume: False
+downstream_epochs : 150
+downstream_eval_every_epochs: 5
+downstream_lr: !!float 5e-2 # default 1e-2

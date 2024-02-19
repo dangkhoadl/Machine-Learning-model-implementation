@@ -1,0 +1,14 @@
+# Env config
+seed: 258
+
+# Out
+exp_name: !!str baseline
+
+# Training Arguments
+num_workers: 64
+batch_size: 512
+epochs: 150
+eval_every_epochs: 5
+
+downstream_lr: !!float 5e-2 # default 1e-2
+downstream_resume: False
