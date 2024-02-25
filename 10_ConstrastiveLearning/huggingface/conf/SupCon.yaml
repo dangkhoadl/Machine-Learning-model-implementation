@@ -1,0 +1,97 @@
+# Env config
+seed: 147
+GPUs: "0" # "0,1,2,3"
+
+# Experiment Arguments
+exp_name: !PLACEHOLDER
+exp_dir: !ref exp/<exp_name>-<seed>
+num_workers: 50
+
+# Pretraining Arguments
+pretrain_exp_dir: !ref <exp_dir>/pretrain
+pretrain_batch_size: 512
+# pretrain_total_steps: 2 # overrided by pretrain_num_epoch
+pretrain_num_epoch: 10
+pretrain_lr: !!float 0.2
+pretraining_args: !new:transformers.TrainingArguments
+    fp16: False # Disable fp16 training, resolve loss == nan issue
+    log_level: "debug"
+    max_grad_norm: 1.0          # Gradient clipping
+    label_names: ["labels"]
+    output_dir: !ref <pretrain_exp_dir>
+    evaluation_strategy: !name:transformers.IntervalStrategy.STEPS
+    save_strategy: "steps"
+    save_steps: !!int 20      # Save checkpoints after ... steps
+    eval_steps: !!int 20      # Evaluation takes places every ... steps
+    logging_steps: !!int 10   # Log trainset every ... steps
+    save_total_limit: 5         # Only last ... models are saved. Older ones are deleted.
+    learning_rate: !ref <pretrain_lr>
+    per_device_train_batch_size: !ref <pretrain_batch_size>
+    per_device_eval_batch_size: !ref <pretrain_batch_size>
+    dataloader_num_workers: !ref <num_workers>
+    gradient_accumulation_steps: 4
+    eval_accumulation_steps: 4
+    # max_steps: !ref <pretrain_total_steps> # overrided by num_train_epochs
+    num_train_epochs: !ref <pretrain_num_epoch>
+    load_best_model_at_end: True
+    warmup_steps: 50          # override warmup_ratio: 0.1
+    metric_for_best_model: "loss"
+    greater_is_better: False
+    seed: !ref <seed>
+    push_to_hub: False
+    remove_unused_columns: False
+    dataloader_drop_last: True # Contrastive training require bz > 1, drop last batch to avoid error
+
+# Training Arguments
+pretrain_ckpts: !ref <pretrain_exp_dir>/ckpts
+downstream_exp_dir: !ref <exp_dir>/downstream
+batch_size: 512
+# total_steps: 2  # overrided by num_epoch
+num_epoch: 20
+learning_rate: !!float 1e-2 # default 1e-2
+training_args: !new:transformers.TrainingArguments
+    fp16: False # Disable fp16 training, resolve loss == nan issue
+    log_level: "debug"
+    max_grad_norm: 1.0          # Gradient clipping
+    label_names: ["labels"]
+    output_dir: !ref <downstream_exp_dir>
+    evaluation_strategy: !name:transformers.IntervalStrategy.STEPS
+    save_strategy: "steps"
+    save_steps: !!int 50       # Save checkpoints after ... steps
+    eval_steps: !!int 50      # Evaluation takes places every ... steps
+    logging_steps: !!int 10   # Log trainset every ... steps
+    save_total_limit: 5         # Only last ... models are saved. Older ones are deleted.
+    learning_rate: !ref <learning_rate>
+    per_device_train_batch_size: !ref <batch_size>
+    per_device_eval_batch_size: !ref <batch_size>
+    dataloader_num_workers: !ref <num_workers>
+    gradient_accumulation_steps: 4
+    eval_accumulation_steps: 4
+    # max_steps: !ref <total_steps>     # overrided by num_train_epochs
+    num_train_epochs: !ref <num_epoch>
+    load_best_model_at_end: True
+    warmup_steps: 50          # override warmup_ratio: 0.1
+    metric_for_best_model: "loss"
+    greater_is_better: False
+    seed: !ref <seed>
+    push_to_hub: False
+    remove_unused_columns: False
+
+early_stopping: !new:transformers.EarlyStoppingCallback
+    early_stopping_patience: 50
+    # early_stopping_threshold: 0.5
+
+#############################################################
+# Testing Arguments
+test_ckpts: !ref <downstream_exp_dir>/ckpts
+
+testing_args: !new:transformers.TrainingArguments
+    output_dir: !ref <downstream_exp_dir>
+    per_device_train_batch_size: !!int 128
+    per_device_eval_batch_size: !!int 128
+    dataloader_num_workers: !ref <num_workers>
+    gradient_accumulation_steps: 4
+    eval_accumulation_steps: 4
+    seed: !ref <seed>
+    push_to_hub: False
+    remove_unused_columns: False

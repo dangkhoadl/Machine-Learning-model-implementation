@@ -209,7 +209,10 @@ class PretrainTrainer(Trainer):
                 feats = torch.stack([z1, z2], dim=1)
 
                 # update loss
-                loss = self._criterion(feats)
+                if self._exp_name == 'SupCon':
+                    loss = self._criterion(feats, labels)
+                else:
+                    loss = self._criterion(feats)
                 val_loss_epoch += loss.item()
 
         # Normalize loss
